@@ -25,6 +25,10 @@ import { createTRPCRouter, protectedProcedure } from "../trpc";
 
 const ABORT_TIMEOUT = 10000;
 
+// Self-host points this at a local checker; cloud falls back to the hosted one.
+const CHECKER_BASE_URL =
+  env.OPENSTATUS_CHECKER_URL ?? "https://openstatus-checker.fly.dev";
+
 // Input schemas
 const httpTestInput = z.object({
   url: safeUrlSchema,
@@ -160,7 +164,7 @@ export async function testHttp(input: z.infer<typeof httpTestInput>) {
 
   try {
     const res = await fetch(
-      `https://openstatus-checker.fly.dev/ping/${input.region}`,
+      `${CHECKER_BASE_URL}/ping/${input.region}`,
       {
         method: "POST",
         headers: {
@@ -252,7 +256,7 @@ export async function testHttp(input: z.infer<typeof httpTestInput>) {
 export async function testTcp(input: z.infer<typeof tcpTestInput>) {
   try {
     const res = await fetch(
-      `https://openstatus-checker.fly.dev/tcp/${input.region}`,
+      `${CHECKER_BASE_URL}/tcp/${input.region}`,
       {
         method: "POST",
         headers: {
@@ -303,7 +307,7 @@ export async function testTcp(input: z.infer<typeof tcpTestInput>) {
 export async function testDns(input: z.infer<typeof dnsTestInput>) {
   try {
     const res = await fetch(
-      `https://openstatus-checker.fly.dev/dns/${input.region}`,
+      `${CHECKER_BASE_URL}/dns/${input.region}`,
       {
         method: "POST",
         headers: {
@@ -472,11 +476,11 @@ export async function triggerChecker(
 function generateUrl({ row }: { row: z.infer<typeof selectMonitorSchema> }) {
   switch (row.jobType) {
     case "http":
-      return `https://openstatus-checker.fly.dev/checker/http?monitor_id=${row.id}`;
+      return `${CHECKER_BASE_URL}/checker/http?monitor_id=${row.id}`;
     case "tcp":
-      return `https://openstatus-checker.fly.dev/checker/tcp?monitor_id=${row.id}`;
+      return `${CHECKER_BASE_URL}/checker/tcp?monitor_id=${row.id}`;
     case "dns":
-      return `https://openstatus-checker.fly.dev/checker/dns?monitor_id=${row.id}`;
+      return `${CHECKER_BASE_URL}/checker/dns?monitor_id=${row.id}`;
     default:
       throw new Error("Invalid jobType");
   }

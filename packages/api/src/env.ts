@@ -14,6 +14,9 @@ export const env = createEnv({
     UNKEY_API_ID: z.string(),
     SLACK_FEEDBACK_WEBHOOK_URL: z.string().optional(),
     EXTERNAL_REPORT_SALT: z.string().optional(),
+    // Self-host: point on-demand tests + check triggers at a local checker.
+    // Unset in cloud, where the hosted checker is used.
+    OPENSTATUS_CHECKER_URL: z.string().url().optional(),
   },
 
   runtimeEnv: {
@@ -28,6 +31,7 @@ export const env = createEnv({
     UNKEY_API_ID: process.env.UNKEY_API_ID,
     SLACK_FEEDBACK_WEBHOOK_URL: process.env.SLACK_FEEDBACK_WEBHOOK_URL,
     EXTERNAL_REPORT_SALT: process.env.EXTERNAL_REPORT_SALT,
+    OPENSTATUS_CHECKER_URL: process.env.OPENSTATUS_CHECKER_URL,
   },
   skipValidation: process.env.NODE_ENV === "test",
 });

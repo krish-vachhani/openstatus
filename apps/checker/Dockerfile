@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine as builder
+FROM golang:1.25-alpine as builder
 
 WORKDIR /go/src/app
 COPY ca/ca-bundle.crt /usr/local/share/ca-certificates/ca-bundle.crt
@@ -18,7 +18,8 @@ COPY go.* .
 RUN go mod download
 
 COPY . .
-RUN go build -trimpath -ldflags "-s -w" -o checker ./cmd/server/main.go
+# Output to /go/bin: `-o checker` collides with the ./checker package dir.
+RUN go build -trimpath -ldflags "-s -w" -o /go/bin/checker ./cmd/server/main.go
 
 FROM scratch
 
@@ -31,7 +32,7 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certifi
 
 COPY --from=builder /usr/share/zoneinfo /usr/share/zoneinfo
 
-COPY --from=builder /go/src/app/checker/main /opt/bin/checker
+COPY --from=builder /go/bin/checker /opt/bin/checker
 
 ENV TZ=UTC
 ENV USER=1000

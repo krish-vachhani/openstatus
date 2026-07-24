@@ -35,10 +35,15 @@ services:
             start_period: 10s
         restart: unless-stopped
 
+    # Analytics (optional, ~6GB RAM). Off by default so the stack runs on an
+    # 8GB Docker; nothing depends on it. Enable with:
+    #   docker compose --profile analytics up -d
     tinybird-local:
         container_name: openstatus-tinybird
         image: tinybirdco/tinybird-local:latest
         platform: linux/amd64
+        profiles:
+            - analytics
         networks:
             - openstatus
         ports:
@@ -52,6 +57,60 @@ services:
             retries: 5
             start_period: 20s
         restart: unless-stopped
+
+    # Migrations
+    # The workflows runtime image is distroless (no shell/deno/source), so it
+    # can't self-migrate. This one-shot service runs the migrator from the
+    # workflows *build* stage, which has deno + source + drizzle SQL. App
+    # services gate on it via `service_completed_successfully`.
+    migrate:
+        container_name: openstatus-migrate
+        build:
+            context: .
+            dockerfile: apps/workflows/Dockerfile
+            target: build
+        image: openstatus/workflows-migrate:latest
+        networks:
+            - openstatus
+        env_file:
+            - .env.docker
+        environment:
+            - DATABASE_URL=http://libsql:8080
+        entrypoint:
+            ["sh", "-c", "cd /app/packages/db && deno run -A src/migrate.mts"]
+        depends_on:
+            libsql:
+                condition: service_healthy
+        restart: "no"
+
+    # Optional one-shot seed. Not run by default; invoke explicitly with:
+    #   docker compose --profile seed run --rm seed
+    seed:
+        container_name: openstatus-seed
+        profiles:
+            - seed
+        image: openstatus/workflows-migrate:latest
+        build:
+            context: .
+            dockerfile: apps/workflows/Dockerfile
+            target: build
+        # Share libsql's network namespace so 127.0.0.1:8080 reaches the DB —
+        # seed.mts refuses any DATABASE_URL that isn't localhost/127.0.0.1.
+        network_mode: "service:libsql"
+        env_file:
+            - .env.docker
+        environment:
+            - DATABASE_URL=http://127.0.0.1:8080
+        entrypoint:
+            [
+                "sh",
+                "-c",
+                "cd /app/packages/db && deno run -A --sloppy-imports src/seed.mts",
+            ]
+        depends_on:
+            migrate:
+                condition: service_completed_successfully
+        restart: "no"
 
     # Internal Services
     workflows:
@@ -72,6 +131,8 @@ services:
             - DATABASE_URL=http://libsql:8080
             - PORT=3000
         depends_on:
+            migrate:
+                condition: service_completed_successfully
             libsql:
                 condition: service_healthy
         healthcheck:
@@ -108,6 +169,28 @@ services:
             timeout: 10s
             retries: 3
             start_period: 30s
+        restart: unless-stopped
+
+    # Local checker: performs on-demand HTTP/TCP/DNS tests and check runs.
+    # CLOUD_PROVIDER=koyeb skips fly-region forwarding so any requested region
+    # runs locally; it reports results tagged region=koyeb_fra (a valid region).
+    checker:
+        container_name: openstatus-checker
+        build:
+            context: apps/checker
+            dockerfile: Dockerfile
+        image: openstatus/checker:latest
+        networks:
+            - openstatus
+        ports:
+            - "8082:8080"
+        env_file:
+            - .env.docker
+        environment:
+            - PORT=8080
+            - GIN_MODE=release
+            - CLOUD_PROVIDER=koyeb
+            - KOYEB_REGION=fra
         restart: unless-stopped
 
     private-location:

@@ -19,10 +19,7 @@ docker compose up -d
 docker compose ps
 
 # 5. (Optional) Seed database with test data
-docker run --rm --network openstatus \
-  -e DATABASE_URL=http://libsql:8080 \
-  $(docker build -q -f apps/workflows/Dockerfile --target build .) \
-  sh -c "cd /app/packages/db && bun src/seed.mts"
+docker compose --profile seed run --rm seed
 
 # 6. (Optional) Deploy Tinybird local - requires tb CLI
 cd packages/tinybird
@@ -56,9 +53,10 @@ docker builder prune
 | dashboard | 3002 | Admin interface |
 | status-page | 3003 | Public status pages |
 | private-location | 8081 | Monitoring agent |
+| checker | 8082 | HTTP/TCP/DNS probe (on-demand tests + check runs) |
 | libsql | 8080 | Database (HTTP) |
 | libsql | 5001 | Database (gRPC) |
-| tinybird-local | 7181 | Analytics |
+| tinybird-local | 7181 | Analytics (opt-in, `--profile analytics`, ~6GB RAM) |
 
 
 ## Architecture
@@ -87,42 +85,47 @@ docker builder prune
 
 ### Automatic Migrations
 
-Migrations run **automatically** when you start the stack with `docker compose up -d`.
+Migrations run **automatically** when you start the stack with `docker compose up -d`,
+via the one-shot `migrate` service. It runs the Drizzle migrator once (after `libsql`
+is healthy, before the app services start) and exits; the app services gate on it with
+`depends_on: { migrate: { condition: service_completed_successfully } }`.
+
+> **Why a separate service?** The `workflows` **runtime** image is distroless — it
+> contains only the compiled binary and `curl`, with no shell, no Deno, and no source
+> tree. It therefore cannot migrate itself. The `migrate` service reuses the workflows
+> Dockerfile's `build` stage, which *does* include Deno, the source, and the drizzle
+> SQL files. Do **not** try `docker compose exec workflows …` — there is no shell there.
 
 **Verifying migrations:**
 ```bash
-# Check workflows logs for migration output
-docker compose logs workflows | grep -A 5 "Running database migrations"
+# Check the migrate service logs
+docker compose logs migrate
 
 # Should show:
-# openstatus-workflows  | Running database migrations...
-# openstatus-workflows  | Migrated successfully
-# openstatus-workflows  | Starting workflows service...
+# openstatus-migrate  | Running migrations
+# openstatus-migrate  | Migrated successfully
 ```
 
-**Manual migration:**
-
-If you need to re-run migrations or troubleshoot:
+**Manual / re-run migration:**
 
 ```bash
-# Run migrations using workflows container
-docker compose exec workflows sh -c "cd /app/packages/db && bun src/migrate.mts"
+# Re-run the one-shot migrate service (idempotent — applied migrations are skipped)
+docker compose up migrate
 
-# Or restart workflows to trigger migrations again
-docker compose restart workflows
+# Or run the migrator ad-hoc from the build stage
+docker compose run --rm --entrypoint sh migrate \
+  -c "cd /app/packages/db && deno run -A src/migrate.mts"
 ```
 
 ### Seeding Test Data (Optional)
 
 **Note:** Migrations run automatically, but seeding does **not**. You must manually seed the database if you want test data.
 
-After migrations complete, seed the database with sample data:
+After migrations complete, seed the database with sample data using the
+profile-gated `seed` service (it waits for `migrate` to finish, then seeds):
 
 ```bash
-docker run --rm --network openstatus \
-  -e DATABASE_URL=http://libsql:8080 \
-  $(docker build -q -f apps/workflows/Dockerfile --target build .) \
-  sh -c "cd /app/packages/db && bun src/seed.mts"
+docker compose --profile seed run --rm seed
 ```
 
 This creates:
@@ -168,13 +171,45 @@ After seeding, you can access the test data:
   ```
 
 
+## Local Checker (monitor tests)
+
+On-demand monitor tests ("Test" button) and check triggers are served by the
+local `checker` service (`apps/checker`). The dashboard/server route to it via
+`OPENSTATUS_CHECKER_URL=http://checker:8080` (set in `.env.docker`); when unset,
+the hosted checker is used instead.
+
+The checker runs with `CLOUD_PROVIDER=koyeb` / `KOYEB_REGION=fra` so it performs
+checks locally for **any** requested region (the `fly` provider would otherwise
+try to fly-replay to a remote region) and reports results tagged `koyeb_fra`.
+Auth uses the shared `CRON_SECRET`.
+
+```bash
+# Health
+curl http://localhost:8082/health   # {"message":"pong","region":"koyeb_fra",...}
+
+# Direct probe (mirrors what the dashboard sends)
+curl -X POST http://localhost:8082/ping/ams \
+  -H "Authorization: Basic $CRON_SECRET" -H 'Content-Type: application/json' \
+  -d '{"url":"https://example.com","method":"GET"}'
+```
+
 ## Tinybird Setup (Optional)
 
-Tinybird is used for analytics and monitoring metrics. The application will work without it, but analytics features will be unavailable.
+Tinybird powers analytics and monitoring charts. The application works without
+it — monitors, checks, the Test button, status pages, and auth are all
+unaffected; only charts/metrics are unavailable.
 
-If you want to enable analytics, you can:
-1. Use Tinybird Cloud and configure `TINY_BIRD_API_KEY` in `.env.docker`
-2. Manually configure Tinybird Local (requires additional setup beyond this guide)
+**It is off by default.** The `tinybird-local` image needs ~6GB RAM, which
+starves the stack on an 8GB Docker Desktop (the dashboard fails to start). It is
+gated behind the `analytics` compose profile. Enable it only if Docker Desktop
+has enough memory (bump to ~12-16GB in Settings → Resources):
+
+```bash
+docker compose --profile analytics up -d   # starts tinybird-local too
+```
+
+Alternatively, use Tinybird Cloud and set `TINY_BIRD_API_KEY` in `.env.docker`
+(leave `tinybird-local` disabled).
 
 ## Configuration
 
